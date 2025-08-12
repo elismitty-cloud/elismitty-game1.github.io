@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Falling Sand (GitHub Pages)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Tailwind (CDN) for simple styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React 18 + ReactDOM (CDN) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel so we can write JSX in this single file -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    html, body { background:#0a0a0b; color:#e5e7eb; }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+  <div id="app" class="w-full max-w-5xl"></div>
+
+  <script type="text/babel">
+    const { useEffect, useMemo, useRef, useState } = React;
+
+    // ===== Falling Sand Game (single-file) =====
+    const CELL = 6, GRID_W = 120, GRID_H = 80;
+    const CANVAS_W = GRID_W * CELL, CANVAS_H = GRID_H * CELL;
+
+    const Empty = 0, Wall = 1, Sand = 2, Water = 3;
+    const MaterialNames = {0:"Empty",1:"Wall",2:"Sand",3:"Water"};
+
+    function useAnimationFrame(callback, enabled) {
+      const requestRef = React.useRef();
+      const previousTimeRef = React.useRef();
+      useEffect(() => {
+        if (!enabled) return;
+        const animate = (time) => {
+          if (previousTimeRef.current != null) {
+            const dt = (time - previousTimeRef.current) / 1000;
+            callback(dt);
+          }
+          previousTimeRef.current = time;
+          requestRef.current = requestAnimationFrame(animate);
+        };
+        requestRef.current = requestAnimationFrame(animate);
+        return () => cancelAnimationFrame(requestRef.current);
+      }, [enabled, callback]);
+    }
+
+    function FallingSand() {
+      const canvasRef = useRef(null);
+      const [grid, setGrid] = useState(() => new Uint8Array(GRID_W * GRID_H));
+      const [paused, setPaused] = useState(false);
+      const [brush, setBrush] = useState(3);
+      const [current, setCurrent] = useState(Sand);
+      const [fps, setFps] = useState(0);
+      const [tick, setTick] = useState(0);
+      const backBufferRef = useRef(new Uint8Array(GRID_W * GRID_H));
+
+      const colors = useMemo(() => ({
+        [Empty]: [24,24,27],   // background
+        [Wall]:  [82,82,91],
+        [Sand]:  [234,179,8],
+        [Water]: [59,130,246],
+      }), []);
+
+      const index = (x, y) => y * GRID_W + x;
+
+      const step = () => {
+        const a = grid, b = backBufferRef.current;
+        b.fill(Empty);
+        for (let y = GRID_H - 1; y >= 0; y--) {
+          const ltr = Math.random() < 0.5;
+          if (ltr) { for (let x = 0; x < GRID_W; x++) applyCell(a,b,x,y); }
+          else     { for (let x = GRID_W-1; x >= 0; x--) applyCell(a,b,x,y); }
+        }
+        setGrid(() => new Uint8Array(b));
+        setTick(t => t + 1);
+      };
+
+      function applyCell(a,b,x,y){
+        const i = index(x,y);
+        const mat = a[i];
+        if (mat === Empty) return;
+        if (mat === Wall) { b[i]=Wall; return; }
+
+        if (mat === Sand){
+          if (y+1<GRID_H && a[index(x,y+1)]===Empty){ b[index(x,y+1)]=Sand; return; }
+          if (y+1<GRID_H && a[index(x,y+1)]===Water){ b[index(x,y+1)]=Sand; b[i]=Water; return; }
+          const dir = Math.random()<0.5?-1:1;
+          for (let attempt=0; attempt<2; attempt++){
+            const dx = attempt===0?dir:-dir, nx=x+dx, ny=y+1;
+            if (nx>=0&&nx<GRID_W&&ny<GRID_H){
+              const n=a[index(nx,ny)];
+              if (n===Empty||n===Water){ b[index(nx,ny)]=Sand; if(n===Water)b[i]=Water; return; }
+            }
+          }
+          b[i]=Sand; return;
+        }
+
+        if (mat === Water){
+          if (y+1<GRID_H && a[index(x,y+1)]===Empty){ b[index(x,y+1)]=Water; return; }
+          const dir = Math.random()<0.5?-1:1;
+          for (let attempt=0; attempt<2; attempt++){
+            const dx = attempt===0?dir:-dir, nx=x+dx, ny=y+1;
+            if (nx>=0&&nx<GRID_W&&ny<GRID_H && a[index(nx,ny)]===Empty){ b[index(nx,ny)]=Water; return; }
+          }
+          const maxFlow = 3, dir2 = Math.random()<0.5?-1:1;
+          for (let d=1; d<=maxFlow; d++){
+            const nx = x + dir2*d;
+            if (nx<0||nx>=GRID_W) break;
+            if (a[index(nx,y)]===Empty){ b[index(nx,y)]=Water; return; }
+          }
+          b[i]=Water; return;
+        }
+      }
+
+      // painting
+      const isPaintingRef = useRef(false);
+      const materialRef = useRef(current);
+      const brushRef = useRef(brush);
+      useEffect(()=>{ materialRef.current=current; },[current]);
+      useEffect(()=>{ brushRef.current=brush; },[brush]);
+
+      const paintAt = (clientX, clientY) => {
+        const canvas = canvasRef.current; if(!canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const x = Math.floor(((clientX - rect.left) * scaleX) / CELL);
+        const y = Math.floor(((clientY - rect.top) * scaleY) / CELL);
+        const bsize = brushRef.current, mat = materialRef.current;
+        setGrid(prev => {
+          const next = new Uint8Array(prev);
+          for (let dy=-bsize; dy<=bsize; dy++){
+            for (let dx=-bsize; dx<=bsize; dx++){
+              if (dx*dx+dy*dy <= bsize*bsize){
+                const nx=x+dx, ny=y+dy;
+                if (nx>=0&&nx<GRID_W&&ny>=0&&ny<GRID_H) next[index(nx,ny)]=mat;
+              }
+            }
+          }
+          return next;
+        });
+      };
+
+      // draw
+      useEffect(() => {
+        const canvas = canvasRef.current; if (!canvas) return;
+        const ctx = canvas.getContext("2d", { alpha:false });
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = CANVAS_W * dpr; canvas.height = CANVAS_H * dpr;
+        canvas.style.width = CANVAS_W + "px"; canvas.style.height = CANVAS_H + "px";
+        ctx.setTransform(dpr,0,0,dpr,0,0);
+
+        let last = performance.now();
+        const draw = () => {
+          ctx.fillStyle = "#0a0a0b"; ctx.fillRect(0,0,CANVAS_W,CANVAS_H);
+          const img = ctx.getImageData(0,0,CANVAS_W,CANVAS_H);
+          const data = img.data;
+          const idx = (x,y)=> (y*CANVAS_W + x)*4;
+
+          for (let y=0; y<GRID_H; y++){
+            for (let x=0; x<GRID_W; x++){
+              const mat = grid[y*GRID_W + x];
+              const [r,g,b] = colors[mat];
+              const sx=x*CELL, sy=y*CELL;
+              for (let py=0; py<CELL; py++){
+                for (let px=0; px<CELL; px++){
+                  const p = idx(sx+px, sy+py);
+                  data[p]=r; data[p+1]=g; data[p+2]=b; data[p+3]=255;
+                }
+              }
+            }
+          }
+          ctx.putImageData(img,0,0);
+
+          const now = performance.now(); setFps(1000/(now-last)); last=now;
+        };
+        draw();
+      }, [grid, colors]);
+
+      useAnimationFrame(() => { step(); }, !paused);
+
+      // mouse/touch
+      useEffect(() => {
+        const canvas = canvasRef.current; if(!canvas) return;
+        const onDown = (e)=>{ isPaintingRef.current=true; const t=e.touches?.[0]||e; paintAt(t.clientX,t.clientY); };
+        const onMove = (e)=>{ if(!isPaintingRef.current) return; const t=e.touches?.[0]||e; paintAt(t.clientX,t.clientY); };
+        const onUp   = ()=>{ isPaintingRef.current=false; };
+        canvas.addEventListener("mousedown", onDown);
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+        canvas.addEventListener("touchstart", onDown, {passive:true});
+        window.addEventListener("touchmove", onMove, {passive:true});
+        window.addEventListener("touchend", onUp);
+        return () => {
+          canvas.removeEventListener("mousedown", onDown);
+          window.removeEventListener("mousemove", onMove);
+          window.removeEventListener("mouseup", onUp);
+          canvas.removeEventListener("touchstart", onDown);
+          window.removeEventListener("touchmove", onMove);
+          window.removeEventListener("touchend", onUp);
+        };
+      }, []);
+
+      // keys
+      useEffect(() => {
+        const onKey = (e) => {
+          if (e.repeat) return;
+          switch(e.key){
+            case "1": setCurrent(Wall); break;
+            case "2": setCurrent(Sand); break;
+            case "3": setCurrent(Water); break;
+            case "0": setCurrent(Empty); break;
+            case "[": setBrush(b=>Math.max(1,b-1)); break;
+            case "]": setBrush(b=>Math.min(20,b+1)); break;
+            case " ": e.preventDefault(); setPaused(p=>!p); break;
+            case "s": case "S": setPaused(true); step(); break;
+            case "c": case "C": setGrid(new Uint8Array(GRID_W*GRID_H)); break;
+          }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, []);
+
+      return (
+        <div className="w-full flex flex-col items-center gap-4">
+          <h1 className="text-xl font-semibold">Falling Sand</h1>
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <button onClick={()=>setCurrent(Wall)} className={`px-3 py-1 rounded-2xl ring-1 ring-zinc-700 ${current===Wall?"ring-2":""}`}>🧱 Wall (1)</button>
+            <button onClick={()=>setCurrent(Sand)} className={`px-3 py-1 rounded-2xl ring-1 ring-zinc-700 ${current===Sand?"ring-2":""}`}>🟨 Sand (2)</button>
+            <button onClick={()=>setCurrent(Water)} className={`px-3 py-1 rounded-2xl ring-1 ring-zinc-700 ${current===Water?"ring-2":""}`}>🟦 Water (3)</button>
+            <button onClick={()=>setCurrent(Empty)} className={`px-3 py-1 rounded-2xl ring-1 ring-zinc-700 ${current===Empty?"ring-2":""}`}>🧽 Eraser (0)</button>
+            <span className="mx-2">Brush: <b className="font-mono">{brush}</b></span>
+            <input type="range" min="1" max="20" value={brush} onChange={e=>setBrush(parseInt(e.target.value))}/>
+            <button onClick={()=>setPaused(p=>!p)} className="px-3 py-1 rounded-2xl ring-1 ring-zinc-700">{paused?"▶️ Play (Space)":"⏸️ Pause (Space)"}</button>
+            <button onClick={()=>{setPaused(true); step();}} className="px-3 py-1 rounded-2xl ring-1 ring-zinc-700">Step (S)</button>
+            <button onClick={()=>setGrid(new Uint8Array(GRID_W*GRID_H))} className="px-3 py-1 rounded-2xl ring-1 ring-zinc-700">Clear (C)</button>
+            <span className="ml-2 font-mono opacity-80">FPS {fps.toFixed(0)} · Tick {tick}</span>
+          </div>
+          <canvas ref={canvasRef} width={CANVAS_W} height={CANVAS_H}
+                  className="rounded-2xl shadow-lg ring-1 ring-zinc-700 bg-black select-none" />
+          <details className="text-sm opacity-80 max-w-3xl">
+            <summary>How to play</summary>
+            <ul className="list-disc pl-6 mt-2 space-y-1">
+              <li>Click & drag to paint. 1=Wall, 2=Sand, 3=Water, 0=Eraser.</li>
+              <li>[ and ] change brush size. Space pauses, S steps, C clears.</li>
+            </ul>
+          </details>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('app'));
+    root.render(<FallingSand />);
+  </script>
+</body>
+</html>
